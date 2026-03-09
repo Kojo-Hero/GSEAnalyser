@@ -1,0 +1,335 @@
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+const Report = require('../models/Report');
+
+const REPORTS_DIR = path.join(__dirname, '../../uploads/reports');
+
+if (!fs.existsSync(REPORTS_DIR)) {
+  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+}
+
+const C = {
+  headerBg:   '#0f2044',
+  accent:     '#1a56db',
+  headingText:'#0f2044',
+  bodyText:   '#1a202c',
+  mutedText:  '#4a5568',
+  metricBg:   '#f0f4ff',
+  divider:    '#cbd5e0',
+  white:      '#ffffff',
+  bullet:     '#1a56db',
+};
+
+// ── Strip markdown formatting into plain text ─────────────────────────────────
+function stripMarkdown(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold**
+    .replace(/\*(.+?)\*/g, '$1')        // *italic*
+    .replace(/`(.+?)`/g, '$1')          // `code`
+    .replace(/#+\s*/g, '')              // ## headings
+    .trim();
+}
+
+// ── Collapse excess whitespace produced by justified markdown text ────────────
+function normaliseSpaces(text) {
+  return text.replace(/  +/g, ' ').trim();
+}
+
+/**
+ * Parse the AI markdown into structured blocks:
+ *   { type: 'h2', text }
+ *   { type: 'bullet', text, indent }
+ *   { type: 'paragraph', text }
+ *   { type: 'blank' }
+ */
+function parseMarkdown(md) {
+  const lines = md.split('\n');
+  const blocks = [];
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+
+    // H1 / H2 / H3
+    const hMatch = line.match(/^(#{1,3})\s+(.+)/);
+    if (hMatch) {
+      blocks.push({ type: 'h2', text: stripMarkdown(hMatch[2]) });
+      continue;
+    }
+
+    // Bullet (-, *, •) with optional indent
+    const bulletMatch = line.match(/^(\s*)([-*•]|\d+\.)\s+(.+)/);
+    if (bulletMatch) {
+      const indent = bulletMatch[1].length > 0 ? 1 : 0;
+      blocks.push({ type: 'bullet', text: normaliseSpaces(stripMarkdown(bulletMatch[3])), indent });
+      continue;
+    }
+
+    // Blank line
+    if (line.trim() === '') {
+      blocks.push({ type: 'blank' });
+      continue;
+    }
+
+    // Regular paragraph text
+    blocks.push({ type: 'paragraph', text: normaliseSpaces(stripMarkdown(line)) });
+  }
+
+  // Collapse consecutive blanks into one
+  return blocks.filter((b, i) => !(b.type === 'blank' && blocks[i - 1]?.type === 'blank'));
+}
+
+/**
+ * Render parsed blocks. Uses PDFKit's native text continuation so the
+ * library handles page breaks — no manual addPage() calls here at all.
+ * We only call addPage() before a heading to keep it with its content.
+ */
+function renderBlocks(doc, blocks, x, width) {
+  // Safe bottom = leave 70 pt for footer band
+  const safeBottom = () => doc.page.height - 70;
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+
+    switch (block.type) {
+
+      case 'h2': {
+        // If less than 60 pt remain, start a new page
+        if (doc.y > safeBottom() - 60) {
+          doc.addPage();
+          doc.y = doc.page.margins.top;
+        }
+        doc.y += 8;
+        const barY = doc.y;
+        doc.rect(x, barY, 4, 18).fill(C.accent);
+        doc.fillColor(C.headingText).fontSize(12).font('Helvetica-Bold')
+          .text(block.text, x + 10, barY + 2, { width: width - 10, lineBreak: true });
+        doc.y += 6;
+        break;
+      }
+
+      case 'bullet': {
+        const indentX = x + (block.indent ? 20 : 8);
+        const bulletWidth = width - (block.indent ? 20 : 8) - 12;
+        if (doc.y > safeBottom() - 20) {
+          doc.addPage();
+          doc.y = doc.page.margins.top;
+        }
+        const dotY = doc.y + 4;
+        doc.circle(indentX, dotY, 2.5).fill(C.bullet);
+        doc.fillColor(C.bodyText).fontSize(9.5).font('Helvetica')
+          .text(block.text, indentX + 10, doc.y, {
+            width: bulletWidth,
+            lineGap: 2,
+            lineBreak: true,
+          });
+        doc.y += 3;
+        break;
+      }
+
+      case 'paragraph': {
+        if (doc.y > safeBottom() - 20) {
+          doc.addPage();
+          doc.y = doc.page.margins.top;
+        }
+        doc.fillColor(C.bodyText).fontSize(9.5).font('Helvetica')
+          .text(block.text, x, doc.y, {
+            width,
+            align: 'justify',
+            lineGap: 3,
+            lineBreak: true,
+          });
+        doc.y += 3;
+        break;
+      }
+
+      case 'blank': {
+        doc.y += 5;
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * Draw footer on every page AFTER doc.end() by iterating bufferedPageRange.
+ * This is the only safe way — no pageAdded event, no recursion risk.
+ */
+function drawFootersOnAllPages(doc) {
+  const range = doc.bufferedPageRange();
+  for (let i = 0; i < range.count; i++) {
+    doc.switchToPage(range.start + i);
+    const PAGE_W    = doc.page.width;
+    const MARGIN    = 50;
+    const CONTENT_W = PAGE_W - MARGIN * 2;
+    const fy        = doc.page.height - 38;
+    doc.rect(0, fy - 6, PAGE_W, 44).fill(C.headerBg);
+    doc.fillColor('#90cdf4').fontSize(7.5).font('Helvetica')
+      .text(
+        'DISCLAIMER: This report is generated by GSE Analyser AI and is for informational purposes only. ' +
+        'Not financial advice. Always conduct your own due diligence before investing.',
+        MARGIN, fy + 2, { width: CONTENT_W, align: 'center', lineBreak: false }
+      );
+  }
+}
+
+async function generateAnalystReport({ ticker, companyName, stockData, aiInsights, dcfResult, userId }) {
+  const fileName = `${ticker}_analyst_report_${Date.now()}.pdf`;
+  const filePath = path.join(REPORTS_DIR, fileName);
+
+  // Safely coerce numeric fields — changePct is stored as String in the DB
+  const sd = {
+    ...stockData,
+    currentPrice:     parseFloat(stockData?.currentPrice)     || 0,
+    changePct:        stockData?.changePct ?? '0',
+    marketCap:        parseFloat(stockData?.marketCap)        || 0,
+    fiftyTwoWeekHigh: parseFloat(stockData?.fiftyTwoWeekHigh) || 0,
+    fiftyTwoWeekLow:  parseFloat(stockData?.fiftyTwoWeekLow)  || 0,
+    peRatio:          stockData?.peRatio      ?? null,
+    eps:              stockData?.eps          ?? null,
+    dividendYield:    stockData?.dividendYield ?? null,
+  };
+
+  return new Promise((resolve, reject) => {
+    // bufferPages:true lets us iterate all pages at the end for footer drawing
+    const doc = new PDFDocument({ margin: 50, size: 'A4', bufferPages: true });
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    const PAGE_W    = doc.page.width;
+    const MARGIN    = 50;
+    const CONTENT_W = PAGE_W - MARGIN * 2;
+
+    // ── HEADER BAND ──────────────────────────────────────────────────────────
+    doc.rect(0, 0, PAGE_W, 70).fill(C.headerBg);
+    doc.fillColor(C.white).fontSize(20).font('Helvetica-Bold')
+      .text('GSE ANALYST REPORT', MARGIN, 16, { width: CONTENT_W });
+    const dateStr = new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+    doc.fillColor('#90cdf4').fontSize(10).font('Helvetica')
+      .text(`Ghana Stock Exchange  ·  ${dateStr}`, MARGIN, 44, { width: CONTENT_W });
+
+    // ── COMPANY TITLE ─────────────────────────────────────────────────────────
+    doc.y = 90;
+    doc.fillColor(C.headingText).fontSize(17).font('Helvetica-Bold')
+      .text(`${companyName || ticker}  (${ticker})`, MARGIN, doc.y);
+    doc.y += 22;
+    doc.fillColor(C.mutedText).fontSize(10).font('Helvetica')
+      .text(
+        `Sector: ${sd.sector || 'N/A'}   ·   Current Price: GHS ${sd.currentPrice.toFixed(4)}   ·   Change: ${sd.changePct}%`,
+        MARGIN, doc.y
+      );
+    doc.y += 14;
+    doc.moveTo(MARGIN, doc.y).lineTo(PAGE_W - MARGIN, doc.y).strokeColor(C.divider).lineWidth(1).stroke();
+
+    // ── KEY METRICS GRID ──────────────────────────────────────────────────────
+    doc.y += 12;
+    const metrics = [
+      ['Market Cap',  sd.marketCap       ? `GHS ${(sd.marketCap / 1e9).toFixed(2)}B` : 'N/A'],
+      ['52W High',    sd.fiftyTwoWeekHigh ? `GHS ${sd.fiftyTwoWeekHigh}`              : 'N/A'],
+      ['52W Low',     sd.fiftyTwoWeekLow  ? `GHS ${sd.fiftyTwoWeekLow}`               : 'N/A'],
+      ['P/E Ratio',   sd.peRatio   ?? 'N/A'],
+      ['EPS',         sd.eps != null      ? `GHS ${sd.eps}`                            : 'N/A'],
+      ['Div. Yield',  sd.dividendYield != null ? `${sd.dividendYield}%`               : 'N/A'],
+    ];
+
+    const COLS    = 3;
+    const cellW   = CONTENT_W / COLS;
+    const cellH   = 44;
+    const gridTop = doc.y;
+
+    doc.rect(MARGIN, gridTop, CONTENT_W, cellH * Math.ceil(metrics.length / COLS)).fill(C.metricBg);
+
+    metrics.forEach(([label, value], i) => {
+      const col = i % COLS;
+      const row = Math.floor(i / COLS);
+      const cx  = MARGIN + col * cellW + 10;
+      const cy  = gridTop + row * cellH + 8;
+
+      doc.fillColor(C.mutedText).fontSize(8).font('Helvetica')
+        .text(label.toUpperCase(), cx, cy, { width: cellW - 14 });
+      doc.fillColor(C.headingText).fontSize(11).font('Helvetica-Bold')
+        .text(String(value), cx, cy + 12, { width: cellW - 14 });
+
+      if (col < COLS - 1) {
+        const bx = MARGIN + (col + 1) * cellW;
+        doc.moveTo(bx, gridTop + row * cellH + 6)
+           .lineTo(bx, gridTop + row * cellH + cellH - 6)
+           .strokeColor(C.divider).lineWidth(0.5).stroke();
+      }
+    });
+
+    doc.y = gridTop + cellH * Math.ceil(metrics.length / COLS) + 16;
+    doc.moveTo(MARGIN, doc.y).lineTo(PAGE_W - MARGIN, doc.y).strokeColor(C.divider).lineWidth(1).stroke();
+
+    // ── AI INSIGHTS ───────────────────────────────────────────────────────────
+    if (aiInsights) {
+      doc.y += 14;
+      doc.rect(MARGIN, doc.y, 4, 18).fill(C.accent);
+      doc.fillColor(C.headingText).fontSize(13).font('Helvetica-Bold')
+        .text('AI-POWERED ANALYSIS', MARGIN + 10, doc.y + 2);
+      doc.y += 28;
+      renderBlocks(doc, parseMarkdown(aiInsights), MARGIN, CONTENT_W);
+    }
+
+    // ── DCF SECTION ───────────────────────────────────────────────────────────
+    if (dcfResult) {
+      if (doc.y > doc.page.height - 160) {
+        doc.addPage();
+        doc.y = doc.page.margins.top;
+      }
+      doc.y += 10;
+      doc.moveTo(MARGIN, doc.y).lineTo(PAGE_W - MARGIN, doc.y).strokeColor(C.divider).lineWidth(1).stroke();
+      doc.y += 14;
+      doc.rect(MARGIN, doc.y, 4, 18).fill(C.accent);
+      doc.fillColor(C.headingText).fontSize(13).font('Helvetica-Bold')
+        .text('DCF VALUATION SUMMARY', MARGIN + 10, doc.y + 2);
+      doc.y += 28;
+
+      const dcfRows = [
+        ['Enterprise Value',      `GHS ${dcfResult.enterpriseValue?.toFixed(2)}M`],
+        ['Equity Value',          `GHS ${dcfResult.equityValue?.toFixed(2)}M`],
+        ['Intrinsic Value/Share', `GHS ${dcfResult.intrinsicValuePerShare?.toFixed(4)}`],
+        ['WACC',                  String(dcfResult.inputs?.wacc ?? 'N/A')],
+        ['Terminal Growth Rate',  String(dcfResult.inputs?.growthRateStage2 ?? 'N/A')],
+        ['Stage 1 Growth Rate',   String(dcfResult.inputs?.growthRateStage1 ?? 'N/A')],
+      ];
+
+      dcfRows.forEach(([label, value], i) => {
+        const rowY = doc.y;
+        if (i % 2 === 0) doc.rect(MARGIN, rowY - 2, CONTENT_W, 18).fill('#f0f4ff');
+        doc.fillColor(C.mutedText).fontSize(9.5).font('Helvetica')
+          .text(label, MARGIN + 8, rowY + 1, { width: 200 });
+        doc.fillColor(C.headingText).font('Helvetica-Bold')
+          .text(value, MARGIN + 220, rowY + 1, { width: 260 });
+        doc.y = rowY + 18;
+      });
+    }
+
+    // ── Draw footer on ALL pages at once, then flush ──────────────────────────
+    drawFootersOnAllPages(doc);
+    doc.end();
+
+    stream.on('finish', async () => {
+      try {
+        const report = await Report.create({
+          userId,
+          ticker,
+          companyName: companyName || ticker,
+          reportType: 'full',
+          filePath,
+          fileName,
+          aiInsights,
+          dcfSummary: dcfResult,
+        });
+        resolve({ report, fileName, filePath });
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    stream.on('error', reject);
+  });
+}
+
+module.exports = { generateAnalystReport };

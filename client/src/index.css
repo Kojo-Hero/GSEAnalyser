@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    @apply bg-gray-950 text-gray-100 antialiased;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-900;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-600 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-gray-900 border border-gray-800 rounded-xl p-5 shadow-lg;
+  }
+  .btn-primary {
+    @apply bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply bg-gray-800 hover:bg-gray-700 text-gray-200 font-semibold px-4 py-2 rounded-lg transition-all duration-150;
+  }
+  .btn-success {
+    @apply bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2 rounded-lg transition-all duration-150;
+  }
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2 rounded-lg transition-all duration-150;
+  }
+  .input {
+    @apply bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-all;
+  }
+  .badge-up {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-900/50 text-emerald-400;
+  }
+  .badge-down {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-red-900/50 text-red-400;
+  }
+  .badge-neutral {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-800 text-gray-400;
+  }
+  .stat-card {
+    @apply card flex flex-col gap-1 items-center text-center;
+  }
+  .stat-label {
+    @apply text-xs font-medium text-gray-500 uppercase tracking-wider;
+  }
+  .stat-value {
+    @apply text-2xl font-bold text-white;
+  }
+}
+
+/* TradingView Widget Override */
+.tradingview-widget-container {
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+/* Markdown Prose Styles */
+.prose-dark {
+  @apply text-gray-300;
+}
+.prose-dark h1, .prose-dark h2, .prose-dark h3 {
+  @apply text-white font-bold mt-4 mb-2;
+}
+.prose-dark h1 { @apply text-xl; }
+.prose-dark h2 { @apply text-lg; }
+.prose-dark h3 { @apply text-base; }
+.prose-dark p { @apply mb-3 leading-relaxed; }
+.prose-dark ul, .prose-dark ol { @apply pl-5 mb-3 space-y-1; }
+.prose-dark li { @apply text-gray-300; }
+.prose-dark strong, .prose-dark b { @apply text-white font-semibold; }
+.prose-dark code { @apply bg-gray-800 px-1 py-0.5 rounded text-sm text-blue-300; }
+
+/* Loading skeleton */
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #1f2937 25%, #374151 50%, #1f2937 75%);
+  background-size: 1000px 100%;
+  animation: shimmer 1.5s infinite linear;
+  @apply rounded;
+}
