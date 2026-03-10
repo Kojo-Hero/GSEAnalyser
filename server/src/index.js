@@ -41,11 +41,12 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Rate Limiting
+// Rate Limiting (exclude health check)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
   message: 'Too many requests from this IP, please try again later.',
+  skip: (req) => req.path === '/api/health' || req.path === '/health',
 });
 app.use('/api/', limiter);
 
