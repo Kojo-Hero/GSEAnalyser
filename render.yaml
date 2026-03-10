@@ -32,7 +32,6 @@ services:
   - type: web
     name: gse-analyser-client
     env: static
-    plan: free
     rootDir: client
     buildCommand: npm install && npm run build
     staticPublishPath: ./build
