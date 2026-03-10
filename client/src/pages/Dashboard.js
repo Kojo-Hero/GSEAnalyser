@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   TrendingUp, TrendingDown, RefreshCw, Activity,
-  Search, Filter, AlertTriangle, CheckCircle, Clock, X
+  Search, Filter, CheckCircle, Clock, X
 } from 'lucide-react';
 import StockTable from '../components/StockTable';
 import api from '../services/api';
@@ -106,12 +106,11 @@ function DataFreshnessBanner({ summary, stocks }) {
 
   if (isSeed) {
     return (
-      <div className="flex items-start gap-3 bg-amber-900/20 border border-amber-700/40 rounded-xl px-4 py-3 text-sm">
-        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+      <div className="flex items-start gap-3 bg-blue-900/20 border border-blue-700/40 rounded-xl px-4 py-3 text-sm">
+        <Clock className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
         <div>
-          <span className="font-semibold text-amber-300">Reference Data (March 2026)</span>
-          <span className="text-amber-400/80 ml-2">— Live Update is currently unavailable. Prices shown are manually verified reference values, not today's live prices.</span>
-          <span className="block text-amber-500/60 text-xs mt-0.5">Click <strong>Refresh</strong> to attempt a live scrape. For real-time data, visit <a href="https://gse.com.gh" target="_blank" rel="noreferrer" className="underline">gse.com.gh</a> directly.</span>
+          <span className="font-semibold text-blue-300">Reference Data</span>
+          <span className="text-blue-400/80 ml-2">— Showing verified GSE reference prices. Click <strong>Live Update</strong> to attempt fetching today's prices.</span>
         </div>
       </div>
     );

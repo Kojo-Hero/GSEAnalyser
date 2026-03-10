@@ -39,8 +39,9 @@ async function scrapeGSEData() {
     const $ = cheerio.load(data);
     const stocks = [];
 
-    // The main equities table is inside div.t > table
-    // Columns: Ticker | Name | Volume | Price | Change
+    console.log('📄 HTML length:', data.length);
+
+    // Find the equities table inside div.t
     $('div.t table tbody tr').each((i, row) => {
       const cells = $(row).find('td');
       if (cells.length < 4) return;
@@ -49,8 +50,10 @@ async function scrapeGSEData() {
       const name   = $(cells[1]).text().trim();
       const volumeRaw = $(cells[2]).text().trim().replace(/,/g, '');
       const priceRaw  = $(cells[3]).text().trim().replace(/,/g, '');
-      const changeCell = cells[4] ? $(cells[4]) : null;
-      const changeRaw  = changeCell ? changeCell.text().trim() : '';
+      const changeCell = cells.length >= 5 ? $(cells[4]) : null;
+      const changeRaw  = changeCell ? changeCell.text().trim().replace(/,/g, '') : '0';
+
+      if (!ticker || ticker.length > 15) return;
 
       const currentPrice = parseFloat(priceRaw) || 0;
       const volume       = parseInt(volumeRaw, 10) || 0;
@@ -60,27 +63,28 @@ async function scrapeGSEData() {
         ? ((changeVal / prevClose) * 100).toFixed(2)
         : '0.00';
 
-      // Determine direction from CSS class (hi = gain, lo = loss)
-      const isGain = changeCell && changeCell.hasClass('hi');
       const isLoss = changeCell && changeCell.hasClass('lo');
 
-      if (!ticker || currentPrice <= 0) return;
+      // Allow stocks with price 0 only if they have a ticker — some may be suspended
+      if (!ticker || currentPrice < 0) return;
 
       stocks.push({
         ticker,
-        name,
+        name: name || ticker,
         currentPrice,
-        prevClose,
-        openPrice: prevClose,   // kwayisi doesn't publish open; use prevClose
+        prevClose: prevClose > 0 ? prevClose : currentPrice,
+        openPrice: prevClose > 0 ? prevClose : currentPrice,
         volume,
         change: changeVal,
-        changePct: (isLoss && !changePct.startsWith('-'))
+        changePct: (isLoss && parseFloat(changePct) > 0)
           ? `-${changePct}`
           : changePct,
         sector: SECTOR_MAP[ticker] || 'Other',
         dataSource: 'afx.kwayisi.org',
       });
     });
+
+    console.log(`📊 Parsed ${stocks.length} stocks from HTML`);
 
     if (stocks.length === 0) {
       console.warn('⚠️  No stocks parsed from kwayisi — falling back to seed data');
@@ -138,6 +142,7 @@ async function scrapeGSEData() {
 
   } catch (err) {
     console.error('❌ kwayisi scrape failed:', err.message);
+    console.error('❌ Error details:', err.code || err.response?.status || 'unknown');
     // Only seed if DB has no data at all
     const count = await Stock.countDocuments();
     if (count === 0) {

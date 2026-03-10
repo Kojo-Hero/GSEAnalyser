@@ -122,7 +122,6 @@ router.post('/refresh', async (req, res, next) => {
   try {
     const { force } = req.query;
     if (force === 'true') {
-      // Force clear stale seed data and re-seed with latest reference prices
       const { seedSampleData } = require('../scrapers/gseScraper');
       await Stock.deleteMany({ dataSource: { $regex: /^seed/ } });
       await seedSampleData();
@@ -132,6 +131,35 @@ router.post('/refresh', async (req, res, next) => {
     res.json({ message: `Refreshed ${stocks.length} stocks`, timestamp: new Date().toISOString() });
   } catch (err) {
     next(err);
+  }
+});
+
+// GET /api/stocks/scrape-test - Debug: test scraper and return raw parsed data
+router.get('/scrape-test', async (req, res, next) => {
+  try {
+    const axios = require('axios');
+    const cheerio = require('cheerio');
+    const { data } = await axios.get('https://afx.kwayisi.org/gse/', {
+      headers: { 'User-Agent': 'Mozilla/5.0 Chrome/122.0.0.0 Safari/537.36' },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const rows = [];
+    $('div.t table tbody tr').each((i, row) => {
+      const cells = $(row).find('td');
+      if (cells.length >= 4) {
+        rows.push({
+          ticker: $(cells[0]).text().trim(),
+          name: $(cells[1]).text().trim(),
+          volume: $(cells[2]).text().trim(),
+          price: $(cells[3]).text().trim(),
+          change: cells.length >= 5 ? $(cells[4]).text().trim() : '',
+        });
+      }
+    });
+    res.json({ htmlLength: data.length, rowCount: rows.length, rows: rows.slice(0, 5) });
+  } catch (err) {
+    res.status(500).json({ error: err.message, code: err.code });
   }
 });
 
