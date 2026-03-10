@@ -1,7 +1,19 @@
 import axios from 'axios';
 
+// Determine API base URL:
+// 1. Use explicit env var if set at build time
+// 2. If running on the Render frontend domain, point to the Render backend
+// 3. Otherwise fall back to /api (local dev via proxy)
+function getBaseURL() {
+  if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
+  if (typeof window !== 'undefined' && window.location.hostname.includes('onrender.com')) {
+    return 'https://gse-analyser-server.onrender.com/api';
+  }
+  return '/api';
+}
+
 const api = axios.create({
-  baseURL: process.env.REACT_APP_API_URL || '/api',
+  baseURL: getBaseURL(),
   timeout: 30000,
 });
 
