@@ -3,14 +3,17 @@ services:
   - type: web
     name: gse-analyser-server
     env: node
+    plan: free
     rootDir: server
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 5000
+        value: 10000
       - key: MONGODB_URI
         sync: false
       - key: JWT_SECRET
@@ -20,18 +23,26 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: CLIENT_URL
-        sync: false
+        fromService:
+          type: web
+          name: gse-analyser-client
+          property: host
 
   # Frontend Static Site
   - type: web
     name: gse-analyser-client
     env: static
+    plan: free
     rootDir: client
     buildCommand: npm install && npm run build
     staticPublishPath: ./build
+    autoDeploy: true
     envVars:
       - key: REACT_APP_API_URL
-        sync: false
+        fromService:
+          type: web
+          name: gse-analyser-server
+          property: host
     routes:
       - type: rewrite
         source: /*

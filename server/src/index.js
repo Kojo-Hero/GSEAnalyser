@@ -26,8 +26,10 @@ app.use(compression());
 app.use(morgan('dev'));
 
 // CORS — allow all localhost origins in development
+const rawClientUrl = process.env.CLIENT_URL || '';
+const clientUrl = rawClientUrl.startsWith('http') ? rawClientUrl : `https://${rawClientUrl}`;
 const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? [process.env.CLIENT_URL]
+  ? [clientUrl]
   : true; // allow all in dev (any port)
 
 app.use(cors({
