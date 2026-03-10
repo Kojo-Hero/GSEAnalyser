@@ -168,10 +168,15 @@ export default function Dashboard() {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
-      setStocks(stocksRes.data.stocks);
-      setTotal(stocksRes.data.total);
-      setSummary(summaryRes.data);
-      setSectors(sectorsRes.data);
+      setStocks(Array.isArray(stocksRes.data.stocks) ? stocksRes.data.stocks : []);
+      setTotal(stocksRes.data.total || 0);
+      const s = summaryRes.data;
+      setSummary({
+        ...s,
+        topGainers: Array.isArray(s.topGainers) ? s.topGainers : [],
+        topLosers: Array.isArray(s.topLosers) ? s.topLosers : [],
+      });
+      setSectors(Array.isArray(sectorsRes.data) ? sectorsRes.data : []);
       setWakingUp(false);
       setLoading(false);
     } catch (err) {

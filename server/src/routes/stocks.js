@@ -48,7 +48,9 @@ router.get('/market-summary', async (req, res, next) => {
     const allStocks = await Stock.find().select('-priceHistory').lean();
     const sorted = [...allStocks].sort((a, b) => parseFloat(b.changePct) - parseFloat(a.changePct));
     const topGainers = sorted.slice(0, 5);
-    const topLosers = sorted.reverse().slice(0, 5);
+    const topLosers = [...allStocks]
+      .sort((a, b) => parseFloat(a.changePct) - parseFloat(b.changePct))
+      .slice(0, 5);
 
     const totalVolume = allStocks.reduce((s, st) => s + (st.volume || 0), 0);
     const advancers = allStocks.filter((s) => parseFloat(s.changePct) > 0).length;
@@ -56,8 +58,8 @@ router.get('/market-summary', async (req, res, next) => {
 
     res.json({
       totalStocks: allStocks.length,
-      topGainers,
-      topLosers,
+      topGainers: Array.isArray(topGainers) ? topGainers : [],
+      topLosers: Array.isArray(topLosers) ? topLosers : [],
       totalVolume,
       advancers,
       decliners,
