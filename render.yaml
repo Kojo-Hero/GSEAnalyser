@@ -23,10 +23,7 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: CLIENT_URL
-        fromService:
-          type: web
-          name: gse-analyser-client
-          property: host
+        value: https://gse-analyser-client.onrender.com
 
   # Frontend Static Site
   - type: web
@@ -38,10 +35,7 @@ services:
     autoDeploy: true
     envVars:
       - key: REACT_APP_API_URL
-        fromService:
-          type: web
-          name: gse-analyser-server
-          property: host
+        value: https://gse-analyser-server.onrender.com/api
     routes:
       - type: rewrite
         source: /*
