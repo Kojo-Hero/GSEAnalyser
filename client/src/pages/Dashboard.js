@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   TrendingUp, TrendingDown, RefreshCw, Activity,
@@ -141,6 +141,7 @@ export default function Dashboard() {
   const [stocks, setStocks] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [wakingUp, setWakingUp] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [sector, setSector] = useState('');
@@ -151,8 +152,10 @@ export default function Dashboard() {
 
   const [autoRefresh, setAutoRefresh] = useState(false);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const retryTimerRef = useRef(null);
+
+  const fetchData = useCallback(async (isInitial = false) => {
+    if (isInitial) setLoading(true);
     try {
       const params = { search, sector, page, limit: 20 };
       const [stocksRes, summaryRes, sectorsRes] = await Promise.all([
@@ -160,18 +163,42 @@ export default function Dashboard() {
         api.get('/stocks/market-summary'),
         api.get('/stocks/sectors'),
       ]);
+      // Success — clear any pending retry
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
       setStocks(stocksRes.data.stocks);
       setTotal(stocksRes.data.total);
       setSummary(summaryRes.data);
       setSectors(sectorsRes.data);
-    } catch (err) {
-      toast.error('Failed to load market data');
-    } finally {
+      setWakingUp(false);
       setLoading(false);
+    } catch (err) {
+      if (isInitial) {
+        // Backend cold-starting — keep loading=true & show waking up banner, retry after 8s
+        setWakingUp(true);
+        retryTimerRef.current = setTimeout(() => fetchData(true), 8000);
+      } else {
+        // Background refresh failed — keep existing data on screen
+        toast.error('Failed to refresh data — showing last known data');
+        setWakingUp(false);
+        setLoading(false);
+      }
     }
   }, [search, sector, page]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    // Cancel any pending retry when dependencies change or on unmount
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    fetchData(true);
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, [fetchData]);
 
   // Auto-refresh: scrape + re-fetch every 5 minutes when enabled
   useEffect(() => {
@@ -274,6 +301,17 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* Waking up banner */}
+      {wakingUp && (
+        <div className="flex items-center gap-3 bg-blue-900/20 border border-blue-700/40 rounded-xl px-4 py-3 text-sm">
+          <RefreshCw className="w-4 h-4 text-blue-400 animate-spin shrink-0" />
+          <div>
+            <span className="font-semibold text-blue-300">Server is waking up…</span>
+            <span className="text-blue-400/80 ml-2">This takes up to 30 seconds on the free tier. Data will appear automatically.</span>
+          </div>
+        </div>
+      )}
 
       {/* Data Freshness Banner */}
       <DataFreshnessBanner summary={summary} stocks={stocks} />
