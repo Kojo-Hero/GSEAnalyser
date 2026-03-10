@@ -77,7 +77,10 @@ app.use((err, req, res, next) => {
 
 // Start server immediately — don't wait for MongoDB
 const server = app.listen(PORT, () => {
-  console.log(`🚀 GSE Analyser Server running on http://localhost:${PORT}`);
+  const url = process.env.NODE_ENV === 'production'
+    ? `https://gse-analyser-server.onrender.com`
+    : `http://localhost:${PORT}`;
+  console.log(`🚀 GSE Analyser Server running on ${url}`);
 });
 
 server.on('error', (err) => {
@@ -95,7 +98,7 @@ mongoose
     serverSelectionTimeoutMS: 5000,
   })
   .then(async () => {
-    console.log('✅ MongoDB connected');
+    console.log(`✅ MongoDB connected — database: ${mongoose.connection.db.databaseName}`);
 
     // Seed sample data on first run
     const { seedSampleData } = require('./scrapers/gseScraper');
