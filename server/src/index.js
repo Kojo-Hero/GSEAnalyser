@@ -54,6 +54,14 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
+// Disable caching for all API responses — prevents 304 Not Modified in browsers/proxies
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
 // Static uploads folder
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
