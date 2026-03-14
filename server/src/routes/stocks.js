@@ -152,8 +152,80 @@ router.get('/scrape-test', async (req, res, next) => {
   }
 });
 
-// GET /api/stocks/source-test — Diagnose all scrape sources live from the server
-// Visit https://gse-analyser-server.onrender.com/api/stocks/source-test to see which sources work
+// POST /api/stocks/ingest - Accept client-scraped stock data and save to DB
+// Used when server-side scraping is blocked by the target site
+router.post('/ingest', async (req, res) => {
+  try {
+    const { stocks: incoming } = req.body;
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      return res.status(400).json({ error: 'stocks array required' });
+    }
+
+    const SECTOR_MAP = {
+      GCB: 'Banking', MTNGH: 'Telecoms', EGH: 'Banking', SCB: 'Banking',
+      GOIL: 'Oil & Gas', TOTAL: 'Oil & Gas', GGBL: 'Consumer Goods',
+      FML: 'Consumer Goods', ACCESS: 'Banking', SOGEGH: 'Banking',
+      CAL: 'Banking', ETI: 'Banking', RBGH: 'Banking', FAB: 'Banking',
+      BOPP: 'Agriculture', PBC: 'Agriculture', UNIL: 'Consumer Goods',
+      SIC: 'Insurance', EGL: 'Insurance', CLYD: 'Technology',
+      CPC: 'Consumer Goods', DASPHARMA: 'Pharmaceuticals', ADB: 'Banking',
+      AGA: 'Mining', AADS: 'Mining', ALW: 'Manufacturing',
+      GLD: 'ETF', TLW: 'Oil & Gas', ASG: 'Mining', ALLGH: 'Mining',
+      DIGICUT: 'Media', HORDS: 'Manufacturing', IIL: 'Pharmaceuticals',
+      MAC: 'Financial', MMH: 'Financial', SAMBA: 'Consumer Goods',
+      TBL: 'Banking', SCBPREF: 'Banking', CMLT: 'Manufacturing',
+    };
+
+    const existing = await Stock.find()
+      .select('ticker sector marketCap peRatio eps dividendYield')
+      .lean();
+    const existingMap = Object.fromEntries(existing.map(s => [s.ticker, s]));
+
+    const ops = incoming.map(s => {
+      const prev = existingMap[s.ticker] || {};
+      return {
+        updateOne: {
+          filter: { ticker: s.ticker },
+          update: {
+            $set: {
+              ticker: s.ticker,
+              name: s.name || s.ticker,
+              currentPrice: s.currentPrice,
+              prevClose: s.prevClose || s.currentPrice,
+              openPrice: s.openPrice || s.prevClose || s.currentPrice,
+              volume: s.volume || 0,
+              change: s.change || 0,
+              changePct: s.changePct || '0.00',
+              sector: SECTOR_MAP[s.ticker] || prev.sector || 'Other',
+              marketCap: prev.marketCap,
+              peRatio: prev.peRatio,
+              eps: prev.eps,
+              dividendYield: prev.dividendYield,
+              dataSource: s.dataSource || 'client-scrape',
+              lastUpdated: new Date(),
+            },
+            $push: {
+              priceHistory: {
+                $each: [{ date: new Date(), price: s.currentPrice, volume: s.volume || 0 }],
+                $slice: -365,
+              },
+            },
+          },
+          upsert: true,
+        },
+      };
+    });
+
+    await Stock.bulkWrite(ops);
+    console.log(`✅ Ingested ${ops.length} stocks from client-side scrape`);
+    res.json({ message: `Ingested ${ops.length} stocks`, count: ops.length, timestamp: new Date().toISOString() });
+  } catch (err) {
+    console.error('❌ /ingest error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 router.get('/source-test', async (req, res) => {
   try {
     console.log('🔬 Running source diagnostics...');
@@ -161,6 +233,46 @@ router.get('/source-test', async (req, res) => {
     res.json({ testedAt: new Date().toISOString(), results });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/stocks/raw-html?url=... — fetch a URL from the server and return first 3000 chars + all table selectors found
+router.get('/raw-html', async (req, res) => {
+  const axios = require('axios');
+  const cheerio = require('cheerio');
+  const target = req.query.url || 'https://gsewebportal.com/trading-and-data/';
+  try {
+    const { data } = await axios.get(target, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.google.com/',
+      },
+      timeout: 20000,
+      maxRedirects: 5,
+    });
+    const $ = cheerio.load(data);
+
+    // Find all tables and report row counts + first row cell text
+    const tables = [];
+    $('table').each((i, tbl) => {
+      const rows = $(tbl).find('tr');
+      const firstRowCells = $(rows[0]).find('th, td').toArray().map(c => $(c).text().trim()).slice(0, 6);
+      const secondRowCells = $(rows[1]).find('th, td').toArray().map(c => $(c).text().trim()).slice(0, 6);
+      tables.push({ tableIndex: i, rows: rows.length, firstRow: firstRowCells, secondRow: secondRowCells });
+    });
+
+    res.json({
+      url: target,
+      statusCode: 200,
+      htmlLength: data.length,
+      preview: data.substring(0, 2000),
+      tables,
+      totalTables: tables.length,
+    });
+  } catch (err) {
+    res.json({ url: target, error: err.message, code: err.code, status: err.response?.status });
   }
 });
 

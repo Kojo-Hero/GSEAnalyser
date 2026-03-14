@@ -207,12 +207,15 @@ export default function Dashboard() {
     };
   }, [fetchData]);
 
-  // Auto-refresh: scrape + re-fetch every 5 minutes when enabled
+  // Auto-refresh: try server scrape first, fall back to client scrape every 5 minutes
   useEffect(() => {
     if (!autoRefresh) return;
     const id = setInterval(async () => {
       try {
-        await api.post('/stocks/refresh');
+        const res = await api.post('/stocks/refresh');
+        if (res.data.scraped === 0) {
+          await clientScrapeAndIngest();
+        }
         await fetchData();
         toast.success('Auto-refreshed live data', { duration: 2000 });
       } catch { /* silent */ }
@@ -223,18 +226,28 @@ export default function Dashboard() {
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
+      // Step 1: try server-side scrape
       const res = await api.post('/stocks/refresh');
-      await fetchData();
       const data = res?.data || {};
-      if (data.scraped === 0) {
-        toast('⚠️ Live scrape returned 0 rows — showing cached data. Source may be temporarily unavailable.', { icon: '⚠️', duration: 5000 });
-      } else if (data.scraped > 0) {
+
+      if (data.scraped > 0) {
+        // Server scrape worked
+        await fetchData();
         toast.success(`✅ Live data updated — ${data.scraped} stocks refreshed from GSE`);
-      } else {
-        toast.success(`✅ ${data.message || 'Data refreshed'}`);
+        return;
       }
-    } catch {
-      toast.error('Refresh failed — check server connection');
+
+      // Step 2: server returned 0 — try client-side scrape via CORS proxy
+      toast('🔄 Server sources blocked — trying browser fetch…', { icon: '🌐', duration: 3000 });
+      const result = await clientScrapeAndIngest();
+      await fetchData();
+      toast.success(`✅ ${result.count} stocks fetched via browser from ${result.source}`);
+
+    } catch (err) {
+      // Both failed
+      await fetchData(); // re-fetch to ensure UI has latest cached data
+      toast('⚠️ All live sources unavailable — showing cached data', { icon: '⚠️', duration: 5000 });
+      console.warn('[handleRefresh] All sources failed:', err.message);
     } finally {
       setRefreshing(false);
     }
