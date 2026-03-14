@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Stock = require('../models/Stock');
-const { scrapeGSEData } = require('../scrapers/gseScraper');
+const { scrapeGSEData, testAllSources } = require('../scrapers/gseScraper');
 const { analyzeStock } = require('../services/aiService');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -149,6 +149,18 @@ router.get('/scrape-test', async (req, res, next) => {
     res.json({ htmlLength: data.length, rowCount: rows.length, rows });
   } catch (err) {
     res.status(500).json({ error: err.message, code: err.code });
+  }
+});
+
+// GET /api/stocks/source-test — Diagnose all scrape sources live from the server
+// Visit https://gse-analyser-server.onrender.com/api/stocks/source-test to see which sources work
+router.get('/source-test', async (req, res) => {
+  try {
+    console.log('🔬 Running source diagnostics...');
+    const results = await testAllSources();
+    res.json({ testedAt: new Date().toISOString(), results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

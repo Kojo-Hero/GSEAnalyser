@@ -2,14 +2,12 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const Stock = require('../models/Stock');
 
-// Rotate user-agents to reduce chance of being blocked
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ];
 
-// Sector map based on known GSE companies
 const SECTOR_MAP = {
   GCB: 'Banking', MTNGH: 'Telecoms', EGH: 'Banking', SCB: 'Banking',
   GOIL: 'Oil & Gas', TOTAL: 'Oil & Gas', GGBL: 'Consumer Goods',
@@ -25,10 +23,9 @@ const SECTOR_MAP = {
   TBL: 'Banking', SCBPREF: 'Banking', CMLT: 'Manufacturing',
 };
 
-/** Sleep helper */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Generic HTTP fetch with one retry */
+/** Fetch HTML — 2 attempts, configurable timeout */
 async function fetchHTML(url, timeoutMs = 20000) {
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -42,6 +39,7 @@ async function fetchHTML(url, timeoutMs = 20000) {
           'Accept-Encoding': 'gzip, deflate, br',
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache',
+          'Referer': 'https://www.google.com/',
         },
         timeout: timeoutMs,
         maxRedirects: 5,
@@ -49,121 +47,201 @@ async function fetchHTML(url, timeoutMs = 20000) {
       console.log(`✅ Fetched ${url} — ${data.length} bytes`);
       return data;
     } catch (err) {
-      console.warn(`⚠️  [attempt ${attempt}] ${url} failed: ${err.code || err.message}`);
-      if (attempt < 2) await sleep(3000);
+      console.warn(`⚠️  [attempt ${attempt}] ${url} failed: ${err.code || err.response?.status || err.message}`);
+      if (attempt < 2) await sleep(2000);
     }
   }
   return null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SOURCE 1: gse.com.gh  — official GSE website market summary table
-// URL: https://gse.com.gh/market-data/prices-and-indices
-// Table columns: Ticker | Company | Open | High | Low | Current | Change | Volume
-// ─────────────────────────────────────────────────────────────────────────────
-async function scrapeGSEOfficial() {
-  const html = await fetchHTML('https://gse.com.gh/market-data/prices-and-indices', 20000);
-  if (!html) return [];
+/** Shared helper — build stock object from parsed fields */
+function buildStock(ticker, name, currentPrice, prevClose, openPrice, volume, changeVal, dataSource) {
+  const cp = parseFloat(currentPrice) || 0;
+  const pc = parseFloat(prevClose) || cp;
+  const op = parseFloat(openPrice) || pc;
+  const vol = parseInt(volume, 10) || 0;
+  const ch = parseFloat(changeVal) || 0;
+  const safePrevClose = pc > 0 ? pc : cp;
+  const changePct = safePrevClose > 0 ? ((ch / safePrevClose) * 100).toFixed(2) : '0.00';
+  if (cp <= 0 || !ticker || ticker.length > 15) return null;
+  return {
+    ticker: ticker.toUpperCase().replace(/[^A-Z0-9]/g, ''),
+    name: name || ticker,
+    currentPrice: cp,
+    prevClose: safePrevClose,
+    openPrice: op,
+    volume: vol,
+    change: ch,
+    changePct,
+    sector: SECTOR_MAP[ticker.toUpperCase()] || 'Other',
+    dataSource,
+  };
+}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SOURCE 1: gse.com.gh/market-statistics/
+// Has a table with all listed equities and their current prices
+// ─────────────────────────────────────────────────────────────────────────────
+async function scrapeGSEMarketStats() {
+  const html = await fetchHTML('https://gse.com.gh/market-statistics/', 20000);
+  if (!html) return [];
   const $ = cheerio.load(html);
   const stocks = [];
 
-  // Try multiple possible table selectors on the official site
-  const tableSelectors = [
-    'table.market-data tbody tr',
-    'table tbody tr',
-    '.market-summary table tbody tr',
-    '#market-data table tbody tr',
-  ];
+  // Try every <table> on the page — pick the one with the most rows
+  let bestRows = $([]);
+  $('table').each((_, tbl) => {
+    const rows = $(tbl).find('tbody tr');
+    if (rows.length > bestRows.length) bestRows = rows;
+  });
+  console.log(`📊 gse.com.gh/market-statistics: best table has ${bestRows.length} rows`);
 
-  let rows = $([]);
-  for (const sel of tableSelectors) {
-    rows = $(sel);
-    if (rows.length > 3) break;
-  }
-
-  console.log(`📊 gse.com.gh: found ${rows.length} table rows`);
-
-  rows.each((i, row) => {
+  bestRows.each((_, row) => {
     const cells = $(row).find('td');
-    if (cells.length < 6) return;
-
-    const ticker = $(cells[0]).text().trim().toUpperCase().replace(/[^A-Z]/g, '');
-    const name = $(cells[1]).text().trim();
-    const currentPriceRaw = $(cells[5]).text().trim().replace(/,/g, '') || $(cells[3]).text().trim().replace(/,/g, '');
-    const openRaw = $(cells[2]).text().trim().replace(/,/g, '');
-    const changeRaw = $(cells[6]).text().trim().replace(/,/g, '') || '0';
-    const volumeRaw = $(cells[7]).text().trim().replace(/,/g, '') || '0';
-
-    if (!ticker || ticker.length > 15) return;
-
-    const currentPrice = parseFloat(currentPriceRaw) || 0;
-    const openPrice = parseFloat(openRaw) || currentPrice;
-    const volume = parseInt(volumeRaw, 10) || 0;
-    const changeVal = parseFloat(changeRaw) || 0;
-    const prevClose = parseFloat((currentPrice - changeVal).toFixed(4));
-    const changePct = prevClose > 0 ? ((changeVal / prevClose) * 100).toFixed(2) : '0.00';
-
-    if (currentPrice <= 0) return;
-
-    stocks.push({
-      ticker,
-      name: name || ticker,
-      currentPrice,
-      prevClose: prevClose > 0 ? prevClose : currentPrice,
-      openPrice,
-      volume,
-      change: changeVal,
-      changePct,
-      sector: SECTOR_MAP[ticker] || 'Other',
-      dataSource: 'gse.com.gh',
-    });
+    if (cells.length < 3) return;
+    const texts = cells.toArray().map(c => $(c).text().trim());
+    // Find the ticker — usually first cell, short uppercase alpha
+    const ticker = texts[0].toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ticker || ticker.length > 12) return;
+    // Find price — first numeric cell after ticker+name
+    const price = texts.slice(1).find(t => /^\d+(\.\d+)?$/.test(t.replace(/,/g, '')));
+    if (!price) return;
+    const stock = buildStock(ticker, texts[1] || ticker, parseFloat(price.replace(/,/g, '')), 0, 0, 0, 0, 'gse.com.gh/market-statistics');
+    if (stock) stocks.push(stock);
   });
 
-  console.log(`📊 gse.com.gh parsed ${stocks.length} stocks`);
+  console.log(`📊 gse.com.gh/market-statistics parsed ${stocks.length} stocks`);
   return stocks;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SOURCE 2: afx.kwayisi.org  — third-party aggregator
-// Known to block cloud IPs — kept as fallback, low priority
+// SOURCE 2: gse.com.gh/equities/
+// Lists all equities with price data
+// ─────────────────────────────────────────────────────────────────────────────
+async function scrapeGSEEquities() {
+  const html = await fetchHTML('https://gse.com.gh/equities/', 20000);
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const stocks = [];
+
+  let bestRows = $([]);
+  $('table').each((_, tbl) => {
+    const rows = $(tbl).find('tbody tr');
+    if (rows.length > bestRows.length) bestRows = rows;
+  });
+  console.log(`📊 gse.com.gh/equities: best table has ${bestRows.length} rows`);
+
+  bestRows.each((_, row) => {
+    const cells = $(row).find('td');
+    if (cells.length < 3) return;
+    const texts = cells.toArray().map(c => $(c).text().trim());
+    const ticker = texts[0].toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ticker || ticker.length > 12) return;
+    const price = texts.slice(1).find(t => /^\d+(\.\d+)?$/.test(t.replace(/,/g, '')));
+    if (!price) return;
+    const stock = buildStock(ticker, texts[1] || ticker, parseFloat(price.replace(/,/g, '')), 0, 0, 0, 0, 'gse.com.gh/equities');
+    if (stock) stocks.push(stock);
+  });
+
+  console.log(`📊 gse.com.gh/equities parsed ${stocks.length} stocks`);
+  return stocks;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOURCE 3: gse.com.gh/market-summary/
+// ─────────────────────────────────────────────────────────────────────────────
+async function scrapeGSEMarketSummary() {
+  const html = await fetchHTML('https://gse.com.gh/market-summary/', 20000);
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const stocks = [];
+
+  let bestRows = $([]);
+  $('table').each((_, tbl) => {
+    const rows = $(tbl).find('tbody tr');
+    if (rows.length > bestRows.length) bestRows = rows;
+  });
+  console.log(`📊 gse.com.gh/market-summary: best table has ${bestRows.length} rows`);
+
+  bestRows.each((_, row) => {
+    const cells = $(row).find('td');
+    if (cells.length < 3) return;
+    const texts = cells.toArray().map(c => $(c).text().trim());
+    const ticker = texts[0].toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ticker || ticker.length > 12) return;
+    const price = texts.slice(1).find(t => /^\d+(\.\d+)?$/.test(t.replace(/,/g, '')));
+    if (!price) return;
+    const stock = buildStock(ticker, texts[1] || ticker, parseFloat(price.replace(/,/g, '')), 0, 0, 0, 0, 'gse.com.gh/market-summary');
+    if (stock) stocks.push(stock);
+  });
+
+  console.log(`📊 gse.com.gh/market-summary parsed ${stocks.length} stocks`);
+  return stocks;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOURCE 4: gsewebportal.com/trading-and-data/
+// ─────────────────────────────────────────────────────────────────────────────
+async function scrapeGSEWebPortal() {
+  const html = await fetchHTML('https://gsewebportal.com/trading-and-data/', 20000);
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const stocks = [];
+
+  let bestRows = $([]);
+  $('table').each((_, tbl) => {
+    const rows = $(tbl).find('tbody tr');
+    if (rows.length > bestRows.length) bestRows = rows;
+  });
+  console.log(`📊 gsewebportal.com: best table has ${bestRows.length} rows`);
+
+  bestRows.each((_, row) => {
+    const cells = $(row).find('td');
+    if (cells.length < 3) return;
+    const texts = cells.toArray().map(c => $(c).text().trim());
+    const ticker = texts[0].toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ticker || ticker.length > 12) return;
+    const price = texts.slice(1).find(t => /^\d+(\.\d+)?$/.test(t.replace(/,/g, '')));
+    if (!price) return;
+    const stock = buildStock(ticker, texts[1] || ticker, parseFloat(price.replace(/,/g, '')), 0, 0, 0, 0, 'gsewebportal.com');
+    if (stock) stocks.push(stock);
+  });
+
+  console.log(`📊 gsewebportal.com parsed ${stocks.length} stocks`);
+  return stocks;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOURCE 5: afx.kwayisi.org — kept as last resort
 // ─────────────────────────────────────────────────────────────────────────────
 async function scrapeKwayisi() {
   const html = await fetchHTML('https://afx.kwayisi.org/gse/', 30000);
   if (!html) return [];
-
   const $ = cheerio.load(html);
   const stocks = [];
 
-  $('div.t table tbody tr').each((i, row) => {
+  $('div.t table tbody tr').each((_, row) => {
     const cells = $(row).find('td');
     if (cells.length < 4) return;
-
     const ticker = $(cells[0]).text().trim().toUpperCase();
     const name = $(cells[1]).text().trim();
     const volumeRaw = $(cells[2]).text().trim().replace(/,/g, '');
     const priceRaw = $(cells[3]).text().trim().replace(/,/g, '');
     const changeCell = cells.length >= 5 ? $(cells[4]) : null;
     const changeRaw = changeCell ? changeCell.text().trim().replace(/,/g, '') : '0';
-
-    if (!ticker || ticker.length > 15) return;
-
+    const isLoss = changeCell && changeCell.hasClass('lo');
     const currentPrice = parseFloat(priceRaw) || 0;
-    const volume = parseInt(volumeRaw, 10) || 0;
     const changeVal = parseFloat(changeRaw) || 0;
     const prevClose = parseFloat((currentPrice - changeVal).toFixed(4));
     const changePct = prevClose > 0 ? ((changeVal / prevClose) * 100).toFixed(2) : '0.00';
-    const isLoss = changeCell && changeCell.hasClass('lo');
-
-    if (currentPrice < 0) return;
-
+    if (!ticker || ticker.length > 15 || currentPrice < 0) return;
     stocks.push({
       ticker,
       name: name || ticker,
       currentPrice,
       prevClose: prevClose > 0 ? prevClose : currentPrice,
       openPrice: prevClose > 0 ? prevClose : currentPrice,
-      volume,
+      volume: parseInt(volumeRaw, 10) || 0,
       change: changeVal,
       changePct: (isLoss && parseFloat(changePct) > 0) ? `-${changePct}` : changePct,
       sector: SECTOR_MAP[ticker] || 'Other',
@@ -176,96 +254,79 @@ async function scrapeKwayisi() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SOURCE 3: gsemarketwatch.com — alternative GSE data source
+// SOURCE TEST — called by /api/stocks/source-test debug endpoint
+// Returns raw diagnostic info from every source without touching the DB
 // ─────────────────────────────────────────────────────────────────────────────
-async function scrapeGSEMarketWatch() {
-  const html = await fetchHTML('https://www.gsemarketwatch.com/', 20000);
-  if (!html) return [];
+async function testAllSources() {
+  const sources = [
+    { name: 'gse.com.gh/market-statistics', url: 'https://gse.com.gh/market-statistics/', fn: scrapeGSEMarketStats },
+    { name: 'gse.com.gh/equities',          url: 'https://gse.com.gh/equities/',          fn: scrapeGSEEquities },
+    { name: 'gse.com.gh/market-summary',    url: 'https://gse.com.gh/market-summary/',    fn: scrapeGSEMarketSummary },
+    { name: 'gsewebportal.com',             url: 'https://gsewebportal.com/trading-and-data/', fn: scrapeGSEWebPortal },
+    { name: 'afx.kwayisi.org',              url: 'https://afx.kwayisi.org/gse/',          fn: scrapeKwayisi },
+  ];
 
-  const $ = cheerio.load(html);
-  const stocks = [];
-
-  // gsemarketwatch uses a data table — try common selectors
-  const selectors = ['table#stock-prices tbody tr', 'table.table tbody tr', 'table tbody tr'];
-  let rows = $([]);
-  for (const sel of selectors) {
-    rows = $(sel);
-    if (rows.length > 3) break;
+  const results = [];
+  for (const s of sources) {
+    const start = Date.now();
+    try {
+      // First check raw fetch
+      const html = await fetchHTML(s.url, 15000);
+      if (!html) {
+        results.push({ source: s.name, status: 'FETCH_FAILED', ms: Date.now() - start, stocks: 0 });
+        continue;
+      }
+      const stocks = await s.fn();
+      results.push({
+        source: s.name,
+        status: stocks.length >= 5 ? 'OK' : 'LOW_RESULTS',
+        ms: Date.now() - start,
+        stocks: stocks.length,
+        sample: stocks.slice(0, 3).map(s => ({ ticker: s.ticker, price: s.currentPrice })),
+      });
+    } catch (err) {
+      results.push({ source: s.name, status: 'ERROR', error: err.message, ms: Date.now() - start, stocks: 0 });
+    }
   }
-
-  console.log(`📊 gsemarketwatch.com: found ${rows.length} rows`);
-
-  rows.each((i, row) => {
-    const cells = $(row).find('td');
-    if (cells.length < 4) return;
-
-    const ticker = $(cells[0]).text().trim().toUpperCase().replace(/[^A-Z]/g, '');
-    const name = $(cells[1]).text().trim();
-    const priceRaw = $(cells[2]).text().trim().replace(/[^0-9.]/g, '');
-    const changeRaw = $(cells[3]).text().trim().replace(/[^0-9.\-]/g, '') || '0';
-    const volumeRaw = cells.length > 4 ? $(cells[4]).text().trim().replace(/,/g, '') : '0';
-
-    if (!ticker || ticker.length > 15) return;
-
-    const currentPrice = parseFloat(priceRaw) || 0;
-    const volume = parseInt(volumeRaw, 10) || 0;
-    const changeVal = parseFloat(changeRaw) || 0;
-    const prevClose = parseFloat((currentPrice - changeVal).toFixed(4));
-    const changePct = prevClose > 0 ? ((changeVal / prevClose) * 100).toFixed(2) : '0.00';
-
-    if (currentPrice <= 0) return;
-
-    stocks.push({
-      ticker,
-      name: name || ticker,
-      currentPrice,
-      prevClose: prevClose > 0 ? prevClose : currentPrice,
-      openPrice: prevClose > 0 ? prevClose : currentPrice,
-      volume,
-      change: changeVal,
-      changePct,
-      sector: SECTOR_MAP[ticker] || 'Other',
-      dataSource: 'gsemarketwatch.com',
-    });
-  });
-
-  console.log(`📊 gsemarketwatch.com parsed ${stocks.length} stocks`);
-  return stocks;
+  return results;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MAIN: Try all sources in order, use first one that returns ≥5 stocks
+// MAIN SCRAPER — tries all sources in order, saves first with ≥5 stocks
 // ─────────────────────────────────────────────────────────────────────────────
 async function scrapeGSEData() {
   console.log('📈 Starting GSE data fetch — trying all sources...');
 
   const sources = [
-    { name: 'gse.com.gh (official)', fn: scrapeGSEOfficial },
-    { name: 'gsemarketwatch.com',    fn: scrapeGSEMarketWatch },
-    { name: 'afx.kwayisi.org',       fn: scrapeKwayisi },
+    { name: 'gse.com.gh/market-statistics', fn: scrapeGSEMarketStats },
+    { name: 'gse.com.gh/equities',          fn: scrapeGSEEquities },
+    { name: 'gse.com.gh/market-summary',    fn: scrapeGSEMarketSummary },
+    { name: 'gsewebportal.com',             fn: scrapeGSEWebPortal },
+    { name: 'afx.kwayisi.org',              fn: scrapeKwayisi },
   ];
 
   let stocks = [];
 
   for (const source of sources) {
     try {
-      console.log(`\n🔄 Trying source: ${source.name}`);
-      stocks = await source.fn();
-      if (stocks.length >= 5) {
-        console.log(`✅ Using data from ${source.name} — ${stocks.length} stocks`);
+      console.log(`\n🔄 Trying: ${source.name}`);
+      const result = await source.fn();
+      if (result.length >= 5) {
+        console.log(`✅ Using ${source.name} — ${result.length} stocks`);
+        stocks = result;
         break;
       }
-      console.warn(`⚠️  ${source.name} returned only ${stocks.length} stocks — trying next source`);
+      console.warn(`⚠️  ${source.name} returned only ${result.length} stocks — trying next`);
     } catch (err) {
       console.warn(`⚠️  ${source.name} threw: ${err.message}`);
     }
   }
 
   if (stocks.length === 0) {
-    console.warn('⚠️  All sources failed or returned 0 stocks');
+    console.warn('⚠️  All sources failed');
     const count = await Stock.countDocuments();
     if (count === 0) {
-      console.log('🌱 Empty DB — seeding fallback data...');
+      console.log('🌱 DB empty — seeding fallback...');
       await seedSampleData();
     } else {
       console.log(`ℹ️  Keeping existing ${count} stocks in DB`);
@@ -273,7 +334,7 @@ async function scrapeGSEData() {
     return [];
   }
 
-  // Preserve existing fundamentals (marketCap, peRatio, etc.) already in DB
+  // Preserve existing fundamentals already in DB
   const existing = await Stock.find()
     .select('ticker sector marketCap peRatio eps dividendYield fiftyTwoWeekHigh fiftyTwoWeekLow')
     .lean();
@@ -286,21 +347,14 @@ async function scrapeGSEData() {
         filter: { ticker: s.ticker },
         update: {
           $set: {
-            ticker:        s.ticker,
-            name:          s.name,
-            currentPrice:  s.currentPrice,
-            prevClose:     s.prevClose,
-            openPrice:     s.openPrice,
-            volume:        s.volume,
-            change:        s.change,
-            changePct:     s.changePct,
-            sector:        SECTOR_MAP[s.ticker] || prev.sector || 'Other',
-            marketCap:     prev.marketCap,
-            peRatio:       prev.peRatio,
-            eps:           prev.eps,
-            dividendYield: prev.dividendYield,
-            dataSource:    s.dataSource,
-            lastUpdated:   new Date(),
+            ticker: s.ticker, name: s.name,
+            currentPrice: s.currentPrice, prevClose: s.prevClose,
+            openPrice: s.openPrice, volume: s.volume,
+            change: s.change, changePct: s.changePct,
+            sector: SECTOR_MAP[s.ticker] || prev.sector || 'Other',
+            marketCap: prev.marketCap, peRatio: prev.peRatio,
+            eps: prev.eps, dividendYield: prev.dividendYield,
+            dataSource: s.dataSource, lastUpdated: new Date(),
           },
           $push: {
             priceHistory: {
@@ -320,9 +374,6 @@ async function scrapeGSEData() {
   return stocks;
 }
 
-/**
- * Fallback seed — only used when DB is empty and all live sources fail.
- */
 async function seedSampleData() {
   const fallback = [
     { ticker: 'GCB',    name: 'GCB Bank Limited',                  currentPrice: 48.14, prevClose: 49.80, volume: 535420,   sector: 'Banking'        },
@@ -347,9 +398,8 @@ async function seedSampleData() {
 
   const now = new Date();
   for (const s of fallback) {
-    const change    = parseFloat((s.currentPrice - s.prevClose).toFixed(4));
+    const change = parseFloat((s.currentPrice - s.prevClose).toFixed(4));
     const changePct = s.prevClose > 0 ? ((change / s.prevClose) * 100).toFixed(2) : '0.00';
-
     const priceHistory = [];
     let price = s.prevClose * 0.88;
     for (let d = 60; d >= 1; d--) {
@@ -361,19 +411,15 @@ async function seedSampleData() {
       priceHistory.push({ date, price: parseFloat(price.toFixed(4)), volume: Math.floor(s.volume * (0.4 + Math.random())) });
     }
     priceHistory.push({ date: now, price: s.currentPrice, volume: s.volume });
-
     const prices = priceHistory.map((p) => p.price);
     await Stock.findOneAndUpdate(
       { ticker: s.ticker },
       {
         $set: {
-          ...s, change, changePct,
-          openPrice: s.prevClose,
+          ...s, change, changePct, openPrice: s.prevClose,
           fiftyTwoWeekHigh: parseFloat(Math.max(...prices).toFixed(4)),
-          fiftyTwoWeekLow:  parseFloat(Math.min(...prices).toFixed(4)),
-          lastUpdated: now,
-          priceHistory,
-          dataSource: 'seed_fallback',
+          fiftyTwoWeekLow: parseFloat(Math.min(...prices).toFixed(4)),
+          lastUpdated: now, priceHistory, dataSource: 'seed_fallback',
         },
       },
       { upsert: true, new: true }
@@ -382,4 +428,4 @@ async function seedSampleData() {
   console.log(`✅ Seeded ${fallback.length} fallback stocks`);
 }
 
-module.exports = { scrapeGSEData, seedSampleData };
+module.exports = { scrapeGSEData, seedSampleData, testAllSources };
