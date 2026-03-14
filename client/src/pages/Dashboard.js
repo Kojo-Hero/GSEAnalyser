@@ -106,11 +106,14 @@ function DataFreshnessBanner({ summary, stocks }) {
 
   if (isSeed) {
     return (
-      <div className="flex items-start gap-3 bg-blue-900/20 border border-blue-700/40 rounded-xl px-4 py-3 text-sm">
-        <Clock className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+      <div className="flex items-start gap-3 bg-amber-900/20 border border-amber-700/40 rounded-xl px-4 py-3 text-sm">
+        <Clock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
         <div>
-          <span className="font-semibold text-blue-300">Reference Data</span>
-          <span className="text-blue-400/80 ml-2">— Showing verified GSE reference prices. Click <strong>Live Update</strong> to attempt fetching today's prices.</span>
+          <span className="font-semibold text-amber-300">Reference / Cached Data</span>
+          <span className="text-amber-400/80 ml-2">
+            — Prices are from seeded reference values{lastUpdated ? ` (last saved ${age})` : ''}.
+            Click <strong>Live Update</strong> to fetch today's live prices from GSE.
+          </span>
         </div>
       </div>
     );
@@ -222,11 +225,13 @@ export default function Dashboard() {
     try {
       const res = await api.post('/stocks/refresh');
       await fetchData();
-      const msg = res?.data?.message || '';
-      if (msg.includes('0 stocks')) {
-        toast('⚠️ Live scrape returned 0 stocks — showing cached data', { icon: '⚠️' });
+      const data = res?.data || {};
+      if (data.scraped === 0) {
+        toast('⚠️ Live scrape returned 0 rows — showing cached data. Source may be temporarily unavailable.', { icon: '⚠️', duration: 5000 });
+      } else if (data.scraped > 0) {
+        toast.success(`✅ Live data updated — ${data.scraped} stocks refreshed from GSE`);
       } else {
-        toast.success(`✅ ${msg || 'Live data updated'}`);
+        toast.success(`✅ ${data.message || 'Data refreshed'}`);
       }
     } catch {
       toast.error('Refresh failed — check server connection');
