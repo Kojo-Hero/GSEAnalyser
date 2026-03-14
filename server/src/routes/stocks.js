@@ -77,29 +77,43 @@ router.get('/market-summary', async (req, res, next) => {
 });
 
 // POST /api/stocks/refresh - Trigger manual scrape (MUST be before /:ticker)
-router.post('/refresh', async (req, res, next) => {
+router.post('/refresh', async (req, res) => {
   try {
     const { force } = req.query;
     if (force === 'true') {
       const { seedSampleData } = require('../scrapers/gseScraper');
       await Stock.deleteMany({ dataSource: { $regex: /^seed/ } });
       await seedSampleData();
-      return res.json({ message: 'Force-reseeded with latest reference prices', timestamp: new Date().toISOString() });
+      return res.json({ message: 'Force-reseeded with latest reference prices', scraped: 0, timestamp: new Date().toISOString() });
     }
     const scraped = await scrapeGSEData();
+    const dbCount = await Stock.countDocuments();
     if (scraped.length === 0) {
-      // scraper returned 0 but existing DB data is still valid — report count from DB
-      const dbCount = await Stock.countDocuments();
+      // All sources failed — return 200 so frontend shows a warning, not an error
       return res.json({
-        message: `Live scrape returned 0 rows — showing ${dbCount} cached stocks`,
+        message: `All live sources unavailable — showing ${dbCount} cached stocks`,
         scraped: 0,
         cached: dbCount,
         timestamp: new Date().toISOString(),
       });
     }
-    res.json({ message: `Refreshed ${scraped.length} stocks from live source`, scraped: scraped.length, timestamp: new Date().toISOString() });
+    res.json({
+      message: `Refreshed ${scraped.length} stocks from live source`,
+      scraped: scraped.length,
+      cached: dbCount,
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
-    next(err);
+    // Even on unexpected error, return 200 with error info so frontend doesn't crash
+    console.error('❌ /refresh error:', err.message);
+    const dbCount = await Stock.countDocuments().catch(() => 0);
+    res.json({
+      message: `Refresh error — showing ${dbCount} cached stocks`,
+      scraped: 0,
+      cached: dbCount,
+      error: err.message,
+      timestamp: new Date().toISOString(),
+    });
   }
 });
 
