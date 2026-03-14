@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import StockTable from '../components/StockTable';
 import api from '../services/api';
+import { clientScrapeAndIngest } from '../services/clientScraper';
 import toast from 'react-hot-toast';
 import { formatDistanceToNow } from 'date-fns';
 
