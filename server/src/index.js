@@ -20,6 +20,10 @@ const { scrapeGSEData } = require('./scrapers/gseScraper');
 const app = express();
 const PORT = process.env.PORT || 5001;
 
+// Trust the first proxy (Render, Heroku, nginx, etc.) so that express-rate-limit
+// can read the real client IP from the X-Forwarded-For header correctly.
+app.set('trust proxy', 1);
+
 // Security & Performance Middleware
 app.use(helmet({ crossOriginEmbedderPolicy: false }));
 app.use(compression());
